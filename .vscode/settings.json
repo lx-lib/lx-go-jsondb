@@ -1,0 +1,12 @@
+{
+  "go.testEnvVars": {
+    "POSTGRES_HOST": "192.168.99.100",
+    "POSTGRES_PORT": "5432",
+    "POSTGRES_USER": "lx",
+    "POSTGRES_PASSWORD": "test",
+    "POSTGRES_DB": "lx",
+    "POSTGRES_POOL_MAX_CONNS": "1",
+    "POSTGRES_LOGLEVEL": "Debug",
+    "POSTGRES_SSLMODE": "prefer"
+  }
+}

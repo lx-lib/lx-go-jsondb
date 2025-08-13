@@ -1,0 +1,47 @@
+issues:
+  exclude-files:
+    - ".*_test\\.go$"
+  exclude:
+    - "the type name `ErrorResponse` should conform to the `XxxError` format"
+
+linters-settings:
+  gci:
+    custom-order: true
+    sections:
+      - standard
+      - prefix(github.com/nobid-lsp-latvia/lx-go-jsondb)
+      - default
+
+linters:
+  presets:
+    - comment
+    - format
+    - bugs
+    - performance
+    - unused
+    - test
+    - sql
+    - style
+
+  enable:
+    - wsl
+
+  disable:
+    - godox
+    - tagalign
+    - exhaustruct
+    - depguard
+    - wrapcheck
+    - gochecknoinits
+    - varnamelen
+    - funlen
+    - ireturn
+    - gomnd
+    - interfacebloat
+    - gochecknoglobals
+    - goerr113
+    - lll
+    - nilnil
+    - containedctx
+    - contextcheck
+    - perfsprint
