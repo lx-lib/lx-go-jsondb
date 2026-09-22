@@ -120,7 +120,7 @@ formatters:
     gci:
       sections:
         - standard
-        - prefix(github.com/nobid-lsp-latvia/lx-go-jsondb)
+        - prefix(github.com/lx-lib/lx-go-jsondb)
         - default
       custom-order: true
   exclusions:
