@@ -61,6 +61,8 @@ type Store interface {
 	AddTask(task core.Tasker)
 	// Ping returns error if the store is not reachable
 	Ping(ctx context.Context) error
+	// Begin starts a transaction in the store
+	Begin(ctx context.Context) (*Tx, error)
 	// Exec executes a method on the store
 	Exec(ctx context.Context, method string, params interface{}, data interface{}) error
 }

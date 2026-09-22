@@ -9,6 +9,7 @@ import (
 
 	"azugo.io/core"
 	"github.com/goccy/go-json"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/tracelog"
@@ -24,8 +25,21 @@ type postgresStore struct {
 	tasks   []core.Tasker
 }
 
+// Option configures a PostgreSQL store during creation.
+// Options are applied after default initialization, allowing customization
+// of behavior such as logging and query tracing.
+type Option func(*traceLog)
+
+// WithTraceLogger returns an Option that overrides the default query trace logger.
+// This is useful for testing or integrating with custom logging frameworks.
+func WithTraceLogger(l tracelog.Logger) Option {
+	return func(tl *traceLog) {
+		tl.Logger = l
+	}
+}
+
 // New creates a new PostgreSQL store.
-func New(a *core.App, config *Configuration) (Store, *pgxpool.Pool, error) {
+func New(a *core.App, config *Configuration, opts ...Option) (Store, *pgxpool.Pool, error) {
 	c, err := pgxpool.ParseConfig(config.ToConnectionString(a.AppName))
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to parse database connection string: %w", err)
@@ -61,7 +75,7 @@ func New(a *core.App, config *Configuration) (Store, *pgxpool.Pool, error) {
 	case zapcore.InvalidLevel:
 	}
 
-	c.ConnConfig.Tracer = &traceLog{
+	tl := &traceLog{
 		TraceLog: &tracelog.TraceLog{
 			Logger: &logger{
 				app:   a,
@@ -69,8 +83,17 @@ func New(a *core.App, config *Configuration) (Store, *pgxpool.Pool, error) {
 			},
 			LogLevel: dblevel,
 		},
-		BytesLimit: config.LogBytesLimit,
+		BytesLimit:         config.LogBytesLimit,
+		SlowQueryThreshold: config.SlowQueryThreshold,
+		DebugQueryArgs:     config.DebugQueryArgs,
+		DebugSlowQueryArgs: config.DebugSlowQueryArgs,
 	}
+
+	for _, opt := range opts {
+		opt(tl)
+	}
+
+	c.ConnConfig.Tracer = tl
 
 	db, err := pgxpool.NewWithConfig(a.BackgroundContext(), c)
 	if err != nil {
@@ -123,10 +146,6 @@ func (s *postgresStore) Start(ctx context.Context) error {
 
 // Ping checks if the store is available.
 func (s *postgresStore) Ping(ctx context.Context) error {
-	if !s.IsReady() {
-		return nil
-	}
-
 	finish := s.app.Instrumenter().Observe(ctx, InstrumentationPing)
 
 	err := s.db.Ping(ctx)
@@ -145,6 +164,7 @@ func (s *postgresStore) Ping(ctx context.Context) error {
 func (s *postgresStore) Close() {
 	finish := s.app.Instrumenter().Observe(context.TODO(), InstrumentationClose)
 	defer finish(nil)
+
 	s.stlock.Lock()
 	s.started = false
 	s.stlock.Unlock()
@@ -185,6 +205,75 @@ func handlePgErrConstraint(rowsErr error, result interface{}) error {
 	return fmt.Errorf("failed to execute procedure: %w", rowsErr)
 }
 
+// Tx represents database transaction.
+type Tx struct {
+	context.Context
+	mu   sync.Mutex
+	done bool
+}
+
+// Begin starts a new transaction and wraps it in the context.
+func (s *postgresStore) Begin(ctx context.Context) (*Tx, error) {
+	if !s.IsReady() {
+		return nil, ErrStoreNotReady
+	}
+
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to start transaction: %w", err)
+	}
+
+	ctx = wrapTxCtx(ctx, tx)
+
+	return &Tx{Context: ctx}, nil
+}
+
+// Rollback retrieves the transaction from context and rolls it back.
+func (s *Tx) Rollback() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.done {
+		return nil
+	}
+
+	_, tx := FetchTxCtx(s)
+	if tx == nil {
+		return errors.New("no transaction found in context")
+	}
+
+	if err := tx.Rollback(s); err != nil {
+		return err
+	}
+
+	s.done = true
+
+	return nil
+}
+
+// Commit retrieves the transaction from context and commits it.
+func (s *Tx) Commit() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.done {
+		return nil
+	}
+
+	_, tx := FetchTxCtx(s)
+	if tx == nil {
+		return errors.New("no transaction found in context")
+	}
+
+	if err := tx.Commit(s); err != nil {
+		return err
+	}
+
+	s.done = true
+
+	return nil
+}
+
 // Exec executes an database method.
 func (s *postgresStore) Exec(ctx context.Context, method string, params interface{}, result interface{}) error {
 	if !s.IsReady() {
@@ -194,6 +283,9 @@ func (s *postgresStore) Exec(ctx context.Context, method string, params interfac
 	var (
 		err  error
 		data []byte
+		inTx = false
+		tx   *Tx
+		pgTx pgx.Tx
 	)
 
 	if params != nil {
@@ -214,18 +306,30 @@ func (s *postgresStore) Exec(ctx context.Context, method string, params interfac
 		schema, proc = "public", parts[0]
 	}
 
-	tx, err := s.db.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to start transaction: %w", err)
+	if _, pgTx = FetchTxCtx(ctx); pgTx != nil {
+		inTx = true
+		tx = &Tx{Context: ctx}
+	} else {
+		tx, err = s.Begin(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to begin transaction: %w", err)
+		}
+
+		_, pgTx = FetchTxCtx(tx)
+		if pgTx == nil {
+			return errors.New("failed to fetch transaction from context")
+		}
 	}
 
-	ctx = wrapTxCtx(ctx, tx)
-	finish := s.app.Instrumenter().Observe(ctx, InstrumentationExec, method)
+	finish := s.app.Instrumenter().Observe(tx, InstrumentationExec, method) //nolint:contextcheck // Tx embeds the original context
 
-	rows, err := tx.Query(ctx, fmt.Sprintf(`CALL "%s"."%s"($1, $2)`, schema, proc), string(data), "{}")
+	rows, err := pgTx.Query(ctx, fmt.Sprintf(`CALL "%s"."%s"($1, $2)`, schema, proc), string(data), "{}")
 	if err != nil {
 		err = handlePgErrConstraint(err, result)
-		_ = tx.Rollback(ctx)
+
+		if !inTx {
+			_ = tx.Rollback() //nolint:contextcheck // Tx embeds context
+		}
 
 		finish(err)
 
@@ -235,7 +339,10 @@ func (s *postgresStore) Exec(ctx context.Context, method string, params interfac
 	if !rows.Next() {
 		rows.Close()
 		err = handlePgErrConstraint(rows.Err(), result)
-		_ = tx.Rollback(ctx)
+
+		if !inTx {
+			_ = tx.Rollback() //nolint:contextcheck // Tx embeds context
+		}
 
 		finish(err)
 
@@ -249,7 +356,10 @@ func (s *postgresStore) Exec(ctx context.Context, method string, params interfac
 		rows.Close()
 
 		err = fmt.Errorf("failed to scan procedure result: %w", err)
-		_ = tx.Rollback(ctx)
+
+		if !inTx {
+			_ = tx.Rollback() //nolint:contextcheck // Tx embeds context
+		}
 
 		finish(err)
 
@@ -263,18 +373,23 @@ func (s *postgresStore) Exec(ctx context.Context, method string, params interfac
 	}
 	if err := json.Unmarshal(op, r); err != nil {
 		err = fmt.Errorf("failed to unmarshal procedure result: %w", err)
-		_ = tx.Rollback(ctx)
+
+		if !inTx {
+			_ = tx.Rollback() //nolint:contextcheck // Tx embeds context
+		}
 
 		finish(err)
 
 		return err
 	}
 
-	if err := tx.Commit(ctx); err != nil {
-		err = fmt.Errorf("failed to commit transaction: %w", err)
-		finish(err)
+	if !inTx {
+		if err := tx.Commit(); err != nil { //nolint:contextcheck // Tx embeds context
+			err = fmt.Errorf("failed to commit transaction: %w", err)
+			finish(err)
 
-		return err
+			return err
+		}
 	}
 
 	if !r.Success {

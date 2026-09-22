@@ -13,12 +13,19 @@ import (
 
 type traceLog struct {
 	*tracelog.TraceLog
-	// ByteLimit is the maximum number of bytes to log for a single argument.
+	// BytesLimit is the maximum number of bytes to log for a single argument.
 	BytesLimit int
+	// SlowQueryThreshold is the duration after which a query is considered slow.
+	SlowQueryThreshold time.Duration
+	// DebugQueryArgs enables logging of query arguments for all queries. WARNING: This may log sensitive data.
+	DebugQueryArgs bool
+	// DebugSlowQueryArgs enables logging of query arguments for slow queries only. WARNING: This may log sensitive data.
+	DebugSlowQueryArgs bool
 }
 
 const (
 	LogLevelError = tracelog.LogLevelError
+	LogLevelWarn  = tracelog.LogLevelWarn
 	LogLevelInfo  = tracelog.LogLevelInfo
 )
 
@@ -44,9 +51,8 @@ func (tl *traceLog) log(ctx context.Context, conn *pgx.Conn, lvl tracelog.LogLev
 	tl.Logger.Log(ctx, lvl, msg, data)
 }
 
-func (t *traceLog) logQueryArgs(args []any) []any {
-	// log only if error and debug level. Avoid logging sensitive data in other cases.
-	if t.BytesLimit == 0 || len(args) == 0 || t.LogLevel < LogLevelError || t.TraceLog.LogLevel != tracelog.LogLevelDebug {
+func (tl *traceLog) truncateArgs(args []any) []any {
+	if tl.BytesLimit == 0 || len(args) == 0 {
 		return nil
 	}
 
@@ -55,16 +61,17 @@ func (t *traceLog) logQueryArgs(args []any) []any {
 	for _, a := range args {
 		switch v := a.(type) {
 		case []byte:
-			if len(v) < t.BytesLimit {
+			if len(v) < tl.BytesLimit {
 				a = hex.EncodeToString(v)
 			} else {
-				a = fmt.Sprintf("%x (truncated %d bytes)", v[:t.BytesLimit], len(v)-t.BytesLimit)
+				a = fmt.Sprintf("%x (truncated %d bytes)", v[:tl.BytesLimit], len(v)-tl.BytesLimit)
 			}
 		case string:
-			if len(v) > t.BytesLimit {
-				var l int = 0
-				for w := 0; l < t.BytesLimit; l += w {
-					_, w = utf8.DecodeRuneInString(v[l:])
+			if len(v) > tl.BytesLimit {
+				l := 0
+				for l < tl.BytesLimit {
+					_, w := utf8.DecodeRuneInString(v[l:])
+					l += w
 				}
 
 				if len(v) > l {
@@ -81,7 +88,7 @@ func (t *traceLog) logQueryArgs(args []any) []any {
 
 const tracelogQueryCtxKey contextKey = iota
 
-func (t *traceLog) TraceQueryStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+func (tl *traceLog) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
 	return context.WithValue(ctx, tracelogQueryCtxKey, &traceQueryData{
 		startTime: time.Now(),
 		sql:       data.SQL,
@@ -89,24 +96,67 @@ func (t *traceLog) TraceQueryStart(ctx context.Context, conn *pgx.Conn, data pgx
 	})
 }
 
-func (t *traceLog) TraceQueryEnd(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryEndData) {
+func (tl *traceLog) TraceQueryEnd(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryEndData) {
 	queryData, ok := ctx.Value(tracelogQueryCtxKey).(*traceQueryData)
 	if !ok {
 		return
 	}
 
-	endTime := time.Now()
-	interval := endTime.Sub(queryData.startTime)
+	elapsed := time.Since(queryData.startTime)
 
 	if data.Err != nil {
-		if t.LogLevel >= LogLevelError {
-			t.log(ctx, conn, LogLevelError, "Query", map[string]any{"sql": queryData.sql, "args": t.logQueryArgs(queryData.args), "err": data.Err, "time": interval})
+		if tl.LogLevel >= LogLevelError {
+			logData := map[string]any{
+				"sql":     queryData.sql,
+				"err":     data.Err,
+				"elapsed": fmt.Sprintf("%dms", elapsed.Milliseconds()),
+			}
+
+			if tl.DebugQueryArgs {
+				logData["args"] = tl.truncateArgs(queryData.args)
+			}
+
+			tl.log(ctx, conn, LogLevelError, "Query", logData)
 		}
 
 		return
 	}
 
-	if t.LogLevel >= LogLevelInfo {
-		t.log(ctx, conn, LogLevelInfo, "Query", map[string]any{"sql": queryData.sql, "args": t.logQueryArgs(queryData.args), "time": interval, "commandTag": data.CommandTag.String()})
+	if slowThreshold := tl.slowThreshold(ctx); slowThreshold > 0 && elapsed >= slowThreshold {
+		logData := map[string]any{
+			"elapsed":   fmt.Sprintf("%dms", elapsed.Milliseconds()),
+			"threshold": fmt.Sprintf("%dms", slowThreshold.Milliseconds()),
+			"sql":       queryData.sql,
+		}
+
+		if tl.DebugSlowQueryArgs || tl.DebugQueryArgs {
+			logData["args"] = tl.truncateArgs(queryData.args)
+		}
+
+		tl.log(ctx, conn, LogLevelWarn, "SlowQuery", logData)
+
+		return
 	}
+
+	if tl.LogLevel >= LogLevelInfo {
+		logData := map[string]any{
+			"sql":        queryData.sql,
+			"elapsed":    fmt.Sprintf("%dms", elapsed.Milliseconds()),
+			"commandTag": data.CommandTag.String(),
+		}
+
+		if tl.DebugQueryArgs {
+			logData["args"] = tl.truncateArgs(queryData.args)
+		}
+
+		tl.log(ctx, conn, LogLevelInfo, "Query", logData)
+	}
+}
+
+func (tl *traceLog) slowThreshold(ctx context.Context) time.Duration {
+	if d, ok := ctx.Value(slowQryCtxKey).(time.Duration); ok && d > 0 {
+		return d
+	}
+
+	return tl.SlowQueryThreshold
 }
