@@ -1,4 +1,4 @@
-module git.zzdats.lv/lx/go-jsondb
+module github.com/nobid-lsp-latvia/lx-go-jsondb
 
 go 1.26.0
 
