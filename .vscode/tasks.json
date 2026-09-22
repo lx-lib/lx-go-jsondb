@@ -1,0 +1,154 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "DB: Start (go-jsondb)",
+      "type": "shell",
+      "command": "docker compose -f ./test/docker-compose.yaml -p jsondb_test up --build -d",
+      "group": {
+        "kind": "build"
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "DB: Stop (go-jsondb)",
+      "type": "shell",
+      "command": "docker compose -f ./test/docker-compose.yaml -p jsondb_test down",
+      "group": {
+        "kind": "build"
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "DB: Stop & remove volumes (go-jsondb)",
+      "type": "shell",
+      "command": "docker compose -f ./test/docker-compose.yaml -p jsondb_test down -v",
+      "group": {
+        "kind": "build"
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Go: Test (go-jsondb)",
+      "type": "shell",
+      "command": "go test -v ./...",
+      "dependsOn": [
+        "DB: Start (go-jsondb)"
+      ],
+      "group": {
+        "kind": "test",
+        "isDefault": true
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      },
+      "problemMatcher": [
+        "$go"
+      ]
+    },
+    {
+      "label": "Go: Test with coverage (go-jsondb)",
+      "type": "shell",
+      "command": "go test -v -cover ./...",
+      "dependsOn": [
+        "DB: Start (go-jsondb)"
+      ],
+      "group": {
+        "kind": "test"
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      },
+      "problemMatcher": [
+        "$go"
+      ]
+    },
+    {
+      "label": "Go: Build (go-jsondb)",
+      "type": "shell",
+      "command": "go build -v ./...",
+      "group": {
+        "kind": "build"
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      },
+      "problemMatcher": [
+        "$go"
+      ]
+    },
+    {
+      "label": "Go: Lint (go-jsondb)",
+      "type": "shell",
+      "command": "golangci-lint run ./...",
+      "group": {
+        "kind": "build"
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      },
+      "problemMatcher": [
+        "$go"
+      ]
+    },
+    {
+      "label": "Go: Format (go-jsondb)",
+      "type": "shell",
+      "command": "gofmt -w .",
+      "group": {
+        "kind": "build"
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Go: Vet (go-jsondb)",
+      "type": "shell",
+      "command": "go vet ./...",
+      "group": {
+        "kind": "build"
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      },
+      "problemMatcher": [
+        "$go"
+      ]
+    },
+    {
+      "label": "DB: Start with tests (go-jsondb)",
+      "type": "shell",
+      "command": "docker compose -f ./test/docker-compose.yaml -p jsondb_test up --build -d && timeout 30s bash -c 'until docker compose -f ./test/docker-compose.yaml -p jsondb_test exec -T postgres pg_isready -U postgres; do sleep 1; done' && go test -v ./...",
+      "group": {
+        "kind": "test"
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      },
+      "problemMatcher": [
+        "$go"
+      ]
+    }
+  ]
+}

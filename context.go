@@ -3,7 +3,9 @@ package jsondb
 import (
 	"context"
 	"reflect"
+	"time"
 
+	"azugo.io/azugo"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -38,6 +40,15 @@ func (c *txCtx) RequestContext() context.Context {
 
 var ctxKey contextKey
 
+const slowQryCtxKey contextKey = 1
+
+// WithSlowQueryThreshold sets a per-call slow query threshold override in the context.
+// When set, this threshold is used instead of the global SlowQueryThreshold for queries
+// executed with this context. Pass 0 to fall back to the global threshold.
+func WithSlowQueryThreshold(ctx context.Context, d time.Duration) context.Context {
+	return context.WithValue(ctx, slowQryCtxKey, d)
+}
+
 // FetchTxCtx and use transaction passed by context if exists.
 // it stores contextData values to struct for fast repeated access.
 func FetchTxCtx(ctx context.Context) (context.Context, pgx.Tx) {
@@ -57,4 +68,16 @@ func wrapTxCtx(ctx context.Context, tx pgx.Tx) *txCtx {
 	tctx.Context = context.WithValue(ctx, ctxKey, tctx)
 
 	return tctx
+}
+
+func (t *Tx) RequestContext() context.Context {
+	if t == nil || t.Context == nil {
+		return context.Background()
+	}
+
+	if rc, ok := t.Context.(azugo.Contexter); ok {
+		return rc.RequestContext()
+	}
+
+	return t.Context
 }

@@ -10,7 +10,7 @@ import (
 	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
-func Tracing(ctx context.Context, tracer oteltrace.Tracer, propagator propagation.TextMapPropagator, spfmt opentelemetry.InstrumentationSpanNameFormatter, op string, args ...any) (func(err error), bool) {
+func Tracing(ctx context.Context, tracer oteltrace.Tracer, _ propagation.TextMapPropagator, spfmt opentelemetry.InstrumentationSpanNameFormatter, op string, args ...any) (func(err error), bool) {
 	method, ok := InstrExec(op, args...)
 	if !ok {
 		return nil, false
@@ -28,8 +28,10 @@ func Tracing(ctx context.Context, tracer oteltrace.Tracer, propagator propagatio
 		oteltrace.WithSpanKind(oteltrace.SpanKindClient),
 	}
 
+	//nolint:spancheck // span.End() is called by the returned callback function
 	_, span := tracer.Start(opentelemetry.FromContext(ctx), spanName, opts...)
 
+	//nolint:spancheck // span.End() is called by the returned callback function
 	return func(err error) {
 		if err != nil {
 			span.SetStatus(codes.Error, err.Error())

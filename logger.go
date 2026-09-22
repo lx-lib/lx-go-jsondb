@@ -30,6 +30,10 @@ func (c *coreWithLevel) Enabled(level zapcore.Level) bool {
 	return c.level.Enabled(level)
 }
 
+func (c *coreWithLevel) With(fields []zapcore.Field) zapcore.Core {
+	return &coreWithLevel{Core: c.Core.With(fields), level: c.level}
+}
+
 func (c *coreWithLevel) Check(e zapcore.Entry, ce *zapcore.CheckedEntry) *zapcore.CheckedEntry {
 	if !c.level.Enabled(e.Level) {
 		return ce

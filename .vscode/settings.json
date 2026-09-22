@@ -1,12 +1,16 @@
 {
   "go.testEnvVars": {
-    "POSTGRES_HOST": "192.168.99.100",
+    "POSTGRES_HOST": "localhost",
     "POSTGRES_PORT": "5432",
-    "POSTGRES_USER": "lx",
+    "POSTGRES_USER": "postgres",
     "POSTGRES_PASSWORD": "test",
-    "POSTGRES_DB": "lx",
+    "POSTGRES_DB": "test",
     "POSTGRES_POOL_MAX_CONNS": "1",
     "POSTGRES_LOGLEVEL": "Debug",
-    "POSTGRES_SSLMODE": "prefer"
+  },
+  "explorer.fileNesting.enabled": true,
+  "explorer.fileNesting.patterns": {
+    "*.go": "${capture}_test.go,${capture}_windows.go,${capture}_other.go",
+    "go.mod": "go.sum"
   }
 }
